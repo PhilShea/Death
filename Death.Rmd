@@ -1,0 +1,502 @@
+---
+title: "Death in 2020"
+output:
+  html_document:
+    df_print: paged
+---
+
+This notebook examines COVID deaths.  All the work is shown below.  If there is interest, I will publish the .Rmd file so one can easily replicate the work.
+
+```{r message=FALSE, warning=FALSE}
+require( readr)
+require( RSocrata)
+require( tidyverse)
+require( scales)
+```
+# Total Deaths
+
+Data downloaded from https://data.cdc.gov/NCHS/Weekly-counts-of-deaths-by-jurisdiction-and-age-gr/y5bj-9g5w.
+
+```{r Death}
+Death <- read.socrata('https://data.cdc.gov/NCHS/Weekly-counts-of-deaths-by-jurisdiction-and-age-gr/y5bj-9g5w', stringsAsFactors = TRUE)
+Death$age_group <- relevel(Death$age_group, "Under 25 years") # Makes this first.
+str( Death)
+```
+
+The data contains deaths by age group, by each state, the entire US, and New York city, and also has observations "Predicted (weighted)" (whatever that is) and "Unweighted," so many deaths are double counted.  The code below will filter out just the "US," "Unweighted" data, and sum the age groups to get total deaths for each week.  Note also that 2020 has 53 weeks.  Week 1 of 2020 started on 30 December *2019*, and week 53 covers 28 December 2020 through 3 January *2021* (this follows the rule that weeks are 7 days, and get assigned to the year with four of the seven days).
+
+```{r DS, message=FALSE, warning=FALSE}
+DS <- Death |> filter( state_abbreviation == 'US', type == 'Unweighted') |>
+   group_by( week,  Year=year, date=week_ending_date) |> 
+   summarise( Total=sum( number_of_deaths), n=n()) # DS has weekly deaths
+```
+
+Here is the standard plot that everybody has been showing.  It does appear that there are a remarkable number of excess deaths.  The last 5 weeks or so typically do not have complete data yet.
+
+```{r dp}
+dp <- ggplot( DS, mapping=aes( x=week, y=Total, color=as.factor(Year)))
+   scale_y_continuous( labels=comma)
+dp + geom_point()  + labs( color='Year')
+```
+
+If we scale the `y` axis from zero it isn't quite as alarming, but still highly significant.
+
+```{r}
+ dp + geom_point() + scale_y_continuous( label=comma, limits=c( 0, 90000)) +
+     labs( color='Year')
+```
+
+## Deaths by Year
+
+Taking full year's worth of deaths should have less noise.
+
+```{r yt}
+(yt <- DS %>% 
+    #filter( Year < 2022) %>% 
+    group_by( Year) %>% 
+    summarise( TD=sum( Total))) # yearly total
+(ytplot <- ggplot( yt, aes(x=Year, y=TD)) +
+      geom_point() +
+      scale_y_continuous( label=comma, limits=c( 2500000, NA)))
+```
+
+So there is a yearly increase in deaths.  Let's measure it.  We want to drop years after 2019, and turn the years into a count.  Scaling 2017 to be year zero will eliminate the need for an intercept.
+
+```{r n2020}
+n2020 <- yt %>% filter( Year < 2020) %>% 
+   mutate( dy = Year - 2017)
+yline <- lm( TD ~ dy + 1, data=n2020)
+(tmp <- summary( yline))
+```
+
+The above means that the mean deaths can be given by the equation $TD = $ `r coef( yline)["dy"]` $dy$, and with `r 100 * (1 - tmp[["coefficients"]]["dy",][4])`% significance.  Let's see the line on the plot.
+
+```{r}
+m <- coef( yline)["dy"]
+b <- coef( yline)[1]  
+ytplot + geom_abline(slope = m, intercept = b - 2017 * m)# fix intercept for estimate about mean.
+```
+
+So the number of deaths increases by about 40,000 every year.  Using this as a guide, the excess deaths in 2020 and 2021 are about 
+
+```{r}
+format( yt$TD[6] - (m * 3) + yt$TD[7] - (m * 4) - 2 * b, 
+        big.mark=",", trim=TRUE)
+```
+
+So more than a million deaths can be attributed to COVID (and the country's response to COVID) in 2020 & 2021 alone.  Let's create the predictions and the delta to the expected deaths.
+
+```{r ytPred}
+yt$Pred <- as.vector( predict( yline, newdata=data.frame( dy = -2:5)))
+# as.vector strips names.
+ed <- yt$TD - yt$Pred # Excess death
+names( ed) <- seq( from=2015, along.with=ed)
+ed
+```
+
+## CDC COVID Data
+
+Let's compare this to the CDC info.  Imprted from the CDC Provisional deaths website: [https://www.cdc.gov/nchs/nvss/vsrr/covid19/index.htm](https://www.cdc.gov/nchs/nvss/vsrr/covid19/index.htm).  This is complicated dataset, and we won't discuss it in detail, but the work is below.
+
+```{r CDCRaw}
+CDCraw <- read.socrata('https://data.cdc.gov/resource/r8kw-7aab.csv',
+                       stringsAsFactors = TRUE)
+CDC <- CDCraw # operate on a copy of the raw data.
+# The "year" field tries to be too helpful.
+levels( CDC$year)[ levels( CDC$year) == "2019/2020"] <- "2020" # week 1 of 2020
+levels( CDC$year)[ levels( CDC$year) == "2020/2021"] <- "2020" # week 53
+levels( CDC$year)[ levels( CDC$year) == "2021/2022"] <- "2021" # week 52
+CDC$year <- as.numeric( as.character( CDC$year)) # Convert to number
+```
+
+```{r CDC}
+CDCyr<- CDC %>% filter( state == 'United States', group=="By Year", year < 2022) 
+# data already contains summaries.
+
+#CDC <- data.frame( Year = c( 2020, 2021), COVID=c( 385668, 462556), 
+#                   TD=c( 3390079, 3469560))
+cat( "Difference in Total Deaths\n")
+prettyNum( CDCyr$total_deaths - yt$TD[6:7], big.mark=",", trim=TRUE)
+cat( "\nDifference between COVID deaths and excess deaths:\n")
+prettyNum(CDCdelta <- CDCyr$covid_19_deaths - ed[6:7], big.mark=",", trim=TRUE)
+cat( "\nTotal Disrepancy")
+TD <- sum( CDCdelta)
+prettyNum( -TD, big.mark=",", trim=TRUE)
+```
+That is almost 200,000 excess deaths not attributed to COVID.  This is why the news media had not been reporting that "million deaths due to COVID" until April, although frankly today (5/19) the CDC is only showing 997,887 through last week. [https://covid.cdc.gov/covid-data-tracker/#trends_totaldeaths](https://covid.cdc.gov/covid-data-tracker/#trends_totaldeaths)
+
+More work is required to estimate the excess deaths so far in 2022.
+
+```{r}
+(CDCplt <- CDC |> filter( state == 'United States', group=="By Week" ) |> 
+    ggplot( ) + aes( x=end_date, y=percent_of_expected_deaths) + geom_point() +
+    scale_y_continuous( label=comma, limits=c( 90, 150)))
+```
+
+
+## Average Deaths by Week
+
+We need to see averages for non-COVID years.  The code below will perform the same filtering and grouping as we did earlier, but will exclude years after 2020 from the data.  Now we have to deal with 2020's week 53 (it had an extra week).  For simplicity's sake, we will simply make the week 53 average the mean of week 1 and week 52 average deaths.
+
+```{r DA, message=FALSE, warning=FALSE}
+DA <- Death |> # DA is average deaths by week estimate by years before 2020
+   filter( state_abbreviation == 'US', type == 'Unweighted', year < 2020) |> 
+   group_by( week, year) |> 
+   summarise( Total=sum( number_of_deaths)) |>
+   summarise( Mean=mean( Total), n=n())
+DA <- rbind( DA, c( 53, mean( DA$Mean[ c( 1,51)]), 0)) # Deal with week 53
+dp + geom_point() + geom_point( data=DA, aes( x=week, y=Mean), color='black') +
+   scale_y_continuous( label=comma, limits=c( 40000, 90000)) + 
+   labs( color='Year')
+```
+
+We cut the lower part as any sample below 40,000 is incomplete.  So, the simple question is about how much higher each post 2019 week is from the average. 
+
+```{r d20}
+d20 <- DS %>% group_by( week) %>% # d20 is the delta from the average.
+   mutate( Delta=Total - DA$Mean[ cur_group_id()])
+delplt <- ggplot( d20, aes( x=week, y=Delta, color=as.factor( Year))) +
+   scale_y_continuous( label=comma) + labs( color='Year')
+delplt + geom_point() + ggtitle( " Difference from 5-year Average Deaths")
+```
+
+The effect of H1N1 in 2017 is evident in the first few weeks.  One other thing to notice is the year-to-year deltas climb.  This was made obvious when we looked at the yearly totals.
+
+### Shape of Weekly Deaths
+
+In order to make reliable estimates of weekly excess deaths, we need a reliable estimate of the weekly death rate, which obviously varies by week.  We'll look at a second order approximation using an equations such as 
+
+$$
+D_a(w) = a(w - w_{min})^2 + D_{min}
+$$
+
+where $D_a$ are the average deaths in week $w$, $w_{min}$ is the week number of the minimum deaths, and $D_{min}$ is the average deaths in week $w_{min}$.
+
+```{r DmDA}
+Dm <- mean( DA$Mean)
+wmin <- DA$week[which(DA$Mean == min( DA$Mean))]
+DA <- DA %>% mutate( wa = week - wmin, AM = Mean - Dm)
+(avgpnts <- ggplot( data=DA) + aes( x = wa, y = AM) + geom_point() +
+      xlab( "Adjusted Week") + ylab( "Adjusted Mean"))
+```
+
+Week `r wmin` is hte minimum week.  There is a cyclical nature here.  It looks like it might be sharply peaked, but let us construct a data item that will allow us to see the means back-to-back.
+
+```{r DA3}
+DA3 <- rbind(DA, DA, DA) # replicate DA 3 times
+DA3$nw <- seq_along(DA3$week)
+ggplot( data=DA3) + aes( x=nw, y = AM) + geom_point() +
+      xlab( "New Week") + ylab( "Adjusted Mean")
+```
+
+So a highly peaked approximation is called for, and using a polynomial over a year is well suited to this form.  The folowing will develop a range of polynomials.
+
+```{r avgfit}
+dlim <- 9
+varlst <- ""
+avgpnts2 <- avgpnts
+avgfit <- data.frame() # DF with fit for each degree.
+for (degree in 2:dlim) {
+   expr <- as.formula( paste("AM ~ poly( wa, degree = ", degree, ")"))
+   fm <- lm( expr, data = DA ) # this ensures the degree shows up in the model
+   #fm <- lm( AM ~ poly( wa, degree = degree), data = DA )
+   var <- paste( "avgfit", degree, sep =  ".") # creates a variable "avgfit.n"
+   assign( var, fm) # essentially avgfit.n <- fm
+   varlst <- paste( varlst, ", ", var)
+   avgfit <- rbind( avgfit, 
+                    data.frame( wa = DA$wa, week = DA$week,
+                                degree = rep_along( DA$wa, paste(degree)),
+                                deg = rep_along( DA$wa, degree),
+                                Pred=as.vector( fitted( get( var))))) 
+                                 #as.vector strips names
+}
+avgpnts2 + geom_line( data = avgfit, 
+                      aes( x = wa, y = Pred, group = degree, color = degree))
+
+```
+
+They *all* fit pretty well. The expression below will show an analysis if variance of the model.  The RSS is the residual sum of squares, and the second model (3rd degree) cuts this in half.  Each successive model reduces this (of course), but with diminishing returns.
+
+```{r}
+eval( str2lang( paste( "anova(", substring( varlst, first=4), ")")))
+# drops first 3 characters of varlist, creates an anova call.
+```
+
+So model three (4th degree) looks like the most significant.  The way to interpret this is that model 3's RSS would only have a 0.04% chance of randomly being that much less than model 2's RSS, whereas model 4's RSS has a 12% chance of randomly being that much less than model 3's. Studyng the graph below reveals the wisdom in the statistics.
+
+
+```{r}
+avgpnts2 +  geom_line( data=avgfit[avgfit$deg %in% c(3,4,5),], 
+                       aes(x=wa, y=Pred, group = degree, color=degree))
+
+```
+
+Now we need to apply this over the whole data set.  
+
+```{r dpsw}
+yw <- c( 0, cumsum( aggregate( week ~ Year, data=DS, FUN=max)$week))
+# yw is a look up for how many weeks to add to each year's week number.
+DS$sw <- DS$week + yw[ DS$Year - 2014] # add serial weeks
+dpsw <- ggplot( DS, mapping = aes( x = date, y = Total)) +
+   scale_y_continuous( labels = scales::comma) + 
+   geom_point( aes( color = factor( Year))) + labs( color = 'Year')
+DS$Pred <- avgfit$Pred[ avgfit$degree == 4][ DS$week] + 
+   yt$Pred[ DS$Year - 2014] / 52 # Adds one week's worth of death for that year.
+ltyp <- rep( "blank", 8)
+(dpswl1 <- dpsw + 
+      geom_line( data = DS, inherit.aes = FALSE, 
+                 mapping = aes( x  = date, y = Pred)) +
+      labs( title = "Weekly Deaths", subtitle = "Prediction ~ Poly(5) + Year",
+            caption = "Weekly deaths from CDC database.  Prediction line estimated over 2015 - 2019."))
+```
+
+As might be expected, the technique highlights the H1N1 surge in early 2018.  The flattening at the start of 2016, 2019, and 2020 is also made more obvious, and makes one question the peakedness of the model. Zooming in on the end of 2019 and the beginning of 2020 show how crude this estimate is (the discontinuity between years), but also shows that this is a small deviation compared to the large number of excess deaths.
+
+```{r}
+dpsw + scale_x_datetime( 
+   limits = as.POSIXct( c("12/01/21", "07/11/22"),
+                                  format="%m/%d/%y")) 
+```
+
+Note that week nine of 2022 is below expectation.  One might think that the pandemic was over in week nine, but this would be mistaken.  The large number of preceding deaths means that once the pandemic is over, the death curve will match an earlier year (although, there are no longer *excess* deaths that can be attributed to COVID).  This looks like if happens on week 12 (the last week of March).
+
+```{r totaldeath}
+ggplot( data=DS[ DS$Year==2022,]) + 
+   geom_point( aes(x=date, y=Total - Pred))
+t <- DS[ DS$Year==2022,]
+t2 <- t$Total - t$Pred
+t2[ t2 >0]
+td.2022 <- sum( t2[ t2 >0])
+paste( "Total Deaths in 2022: ", td.2022, "\n")
+paste( "Total COVID Death through week 11: ", ed[ "2020"]+ed["2021"] + td.2022)
+```
+
+## Alternate Method of Deaths by Week
+
+That was a complicated process that can all be automated within `lm`.  We need to make an "adjusted week" columm and an adjusted total column which will have the mean subtracted out.  A fourth degree polynomlial will still be used.
+
+```{r}
+DS$aYear <- DS$Year - 2017 # Create an adjusted year so 2017 is zero.
+mtw <- mean( DS$Total[ DS$Year < 2020])
+DS$aTotal <- DS$Total - mtw # The deviation from the 5 year average.
+DS$aw <- DS$week - wmin
+fit2 <- lm( aTotal ~ poly( aw, degree = 4) + aYear, data = DS[ DS$Year < 2020,])
+summary( fit2)
+DS$Pred2 <- predict( fit2, newdata = DS) + mtw # must add the mean back in.
+dpsw2 <- ggplot( DS, mapping = aes( x = date, y = Total)) +
+   scale_y_continuous( labels = scales::comma) + 
+   geom_point( aes( color = factor( Year))) + labs( color = 'Year')
+(dpsw3 <- dpsw2 + geom_line( data=DS, 
+                   mapping=aes( x  = date, y = Pred2)) +
+   labs( title = "Weekly Deaths", subtitle = "Prediction ~ Poly( week, 4) + Year",
+            caption = "Weekly deaths from CDC database.  Prediction (black line) estimated over 2015 - 2019.") +  annotate( "rect", xmin = as.POSIXct( "03/23/22", format = "%m/%d/%y"),
+             xmax = as.POSIXct("05/17/22", format = "%m/%d/%y"), ymin = 52500,
+             ymax = 57500, alpha = 0.2) + theme( legend.position = "none"))
+```
+
+The coefficients are somewhat difficult to interpret, but note the `aYear` coefficient is `r coef(fit2)["aYear"]`, which is comparable to the previous value (~40,000) divided by 52 (`r m`).  Below is the difference between the methods.
+
+```{r}
+ggplot( data=DS, mapping=aes( x = date, y = (Pred - Pred2))) + geom_point()
+```
+
+## End of the COVID 19 Pandemic
+
+When the deth curve starts to match the 4^th degree polynomial, the pandemic is truly over. Simply eyeballing the previous graphs, it looks like the death rate has settled back to the 2019 level.  The following will demonstrate this.
+
+```{r}
+DS2 <- DS
+DS2$aYear  <- DS2$aYear - 3
+DS2$Pred2 <-  predict( fit2, newdata = DS2) + mtw # must add the mean back in.
+dpsw3 +  geom_line( data = DS2, mapping = aes( x = date, y = DS2$Pred2),
+                    linetype=2, colour='red') +
+   scale_x_datetime( limits = as.POSIXct( c("01/02/22", "07/11/22"), 
+                                          format = "%m/%d/%y")) +
+   labs( title = "Weekly Deaths in 2022", 
+         subtitle = "2022 & 2017 predictions", x="2022",
+ caption = "Solid black line is 2022 prediction, dotted red line is 2017 prediction.") +
+   annotate( "rect", xmin = as.POSIXct( "03/23/22", format = "%m/%d/%y"),
+             xmax = as.POSIXct("05/17/22", format = "%m/%d/%y"), ymin = 52500,
+             ymax = 57500, alpha = 0.2) + theme( legend.position = "none")
+
+```
+
+## Total Deaths Due to COVID-19
+
+We can probably get a better estimate of excess deaths by looking at the weekly data.  The start will be the first week in 2020 in which the weekly deaths exceeded the prediction.
+
+```{r}
+DS <- DS[ order( DS$sw), ]
+DS$cTotal <- cumsum( DS$Total - DS$Pred2)
+plot( DS$sw, DS$cTotal, panel.first = grid())
+fst <- which( (DS$Total > DS$Pred2) & DS$Year == 2020)[ 1]
+(md <- max( DS$cTotal)) # Once it starts to decrease, we are past excess deaths,
+# although the pandemic may still be going on.
+imax <- which( DS$cTotal == md)
+DS$cTotal[ imax] - DS$cTotal[fst - 1] 
+# cTotal[ fst] reflects the increase, so use the one before it.
+```
+
+
+# Death by Age
+
+Let us take advantage of the full data set and see how deaths break out by age group.  We want total deaths in the US, but now we will group by `year`, `week`, and `age_group`.  First, let's just look just at 2020.
+
+```{r byage, message=FALSE, warning=FALSE}
+byage <-  Death %>% 
+   filter( state_abbreviation == 'US', type == 'Unweighted') #%>%
+   #group_by( week, age_group) 
+byage20 <- byage %>% filter( year == 2020)
+(byageplt <- ggplot( byage20, 
+                     aes( x=week, y=number_of_deaths, color=age_group)) +
+      geom_line( )) + ggtitle('2020 Deaths by week and age')
+```
+
+The excess deaths continued rising at the end of 2020, so let's create a new identifier which is the week number of the disease.  We'll call week 12 of 2020 as week one.
+
+```{r byage20p}
+Years <- sort( unique( byage$year)) # note variable is capitalized and plural.
+yadd<- c( 0, cumsum( vapply( Years,  
+                             function( x) max( byage$week[ byage$year==x]),
+                             1L)))
+byagedis <- mutate(byage, disweek = week + yadd[ year - Years[ 1] + 1])
+byage20p <- byagedis %>% filter( year >= 2020)
+(byageplt2 <- ggplot( byage20p, 
+                     aes( x=disweek, y=number_of_deaths, color=age_group)) +
+      geom_line( )) + ggtitle('Disease Deaths by week and age')
+``` 
+
+
+## Average by Age
+
+We have enough data to compare the average weekly deaths in the years prior to 2020 to 2020's weekly deaths by age.  We need to use the five years prior to 2020 to predict how each of 2020's weeks would appear.  The following will give us the mean deaths by age group for each week, and we will keep the scale the same for easy comparison with the 25,000 per week peak at week 15 of 2020.  Since we will be comparing to 2020, we need to come up with a week 53 average for each age goup too. As before, this will be the mean of week 1 and week 52 for each age group.
+
+```{r byagemean, message=FALSE, warning=FALSE}
+byagemean <- byage %>% group_by( week, age_group) %>%
+   filter( year < 2020) %>% 
+   summarise( mean=mean( number_of_deaths), n=n())
+w53 <- byagemean[ byagemean$week %in% c( 1, 52),] %>% # selects only weeks 1 & 52
+   group_by( age_group) %>% summarise( mean=mean( mean)) # computes the means
+nag <- nlevels( byagemean$age_group) # num of age groups.
+w53 <- cbind( w53, week=rep( 53, nag), n=rep( 0, nag))
+byagemean <- rbind( byagemean, w53)
+# rm( w53, nag)
+(byageplt <- ggplot( byagemean, aes( x=week, y=mean, color=age_group)) +
+      geom_line( ) + scale_y_continuous( label=comma, limits=c( 0, 25000))) +
+   labs( title='Mean number of deaths by age group')
+```
+
+Now let's get a delta death rate by age.
+
+```{r byage20m}
+(byage20m <- inner_join( byage20, byagemean, by=c("week", "age_group")) %>%
+    # byage20m now has the means, and is shorter if run before the end of 2020.
+   mutate( deld = number_of_deaths - mean)) %>% filter( week <= vw) %>%
+   # mutate adds a deld column
+   ggplot( aes(x=week, y=deld, color=age_group)) + geom_line()
+```
+
+We see here that people under 25 were completely unaffected, but just before week 15 all other groups appear to be affected badly, including the 25-44 age group.  The 25-44 group appears to have constant increase of about 1,000 deaths per week starting around week 12.  A consistent hypothesis would be that these deaths are not due to COVID infections, but to other effects of the lock down (suicide, inability to access healthcare, stress effects, etc.).
+
+```{r sum20, message=FALSE, warning=FALSE}
+fw <- 13
+(sum20 <- byage20m %>% group_by( age_group) %>% filter( week %in% (fw:vw)) %>% 
+   summarise( tot20byage=sum( number_of_deaths), 
+              del20byage=sum( deld), sd=sd( deld)))
+```
+
+Now we know that this process of comparing to the mean overestimates the excess deaths as the number of deaths increases every year.  
+
+## Extrapolated by Age
+
+Recall that we have five years of data prior to 2020, and we can use those five samples to create a simple linear regression by age and even in each of the 52 weeks.  We should expect substantially more noise in these samples, indeed the H1N1 flu at the end of 2017 and 2018 can cause negative correlation in the December '17 through March of '18.
+
+```{r dy}
+byage <- byage %>% mutate( dy = year - 2017)
+```
+
+
+### Developing the model
+
+We need a model function that will fit a linear model to the five yearly samples.
+
+```{r}
+model1 <- function( df) lm( data=df, number_of_deaths ~ dy)
+x <- model1( filter( byage, year < 2020 & age_group=='25-44 years'))
+c( coef( x), rs=summary( x)$r.squared)
+```
+
+Now we see how to create the samples too.  So here's the function:
+
+```{r}
+mod2coef <- function( x) { 
+   # Takes a fit and extracts relevant data into a tibble.
+   z <- coef( x)
+   tibble( Intercept=z[1], Slope=z[2], Pred20 = z[1] + 3 * z[2], 
+           R2=summary( x)$r.squared)
+   }
+mod2coef( x)
+```
+
+### Executing the model
+
+To get individual predictions for each age group we need to perform a few steps. We need to filter out the 2020 data, then we need to group the remaining yearly data by `age_group` and `week`.  Once we have those groups, we can fit each group to a simple linear model, (resulting in $52 \times 5 = 312$ models).  Then we need to extract the important items from the model (the intercept, slope, prediction, and $R^2$).  We filter the data to the valid weeks so we can compare it to the same group of 2020 data. At this point we are going to ignore 2020's week 53.
+
+```{r fitlist}
+fitlist <- byage %>% 
+   filter( year < 2020, week %in% (fw:vw)) %>% # drop 2020 from the data 
+   group_by( age_group) %>% # group the data
+   nest() %>% # nest it in groups
+   mutate( model = map( data, model1)) %>% # create the linear models
+   mutate( modvec = map( model, mod2coef)) %>% # extract the coefficients.
+   select( age_group, modvec) %>% # extract the coefficients.
+   unnest( cols=modvec) 
+```
+
+That did the first part; `fitlist` now has the items with a vector of the stats and predictions in each row.
+
+```{r}
+fitlist
+```
+
+We need to combine the `byage20` table with this one.
+
+```{r}
+(sum20e <- inner_join( sum20, fitlist) %>% mutate( del20 = tot20byage - Pred20))
+```
+
+
+## By Age and By Week
+
+```{r fitlistw}
+fitlistw <- byage %>% 
+   filter( year != 2020) %>% # drop 2020 from the data 
+   group_by( week, age_group) %>% # group the data
+   nest() %>% # nest it in groups
+   mutate( model = map( data, model1)) %>% # create the linear models
+   mutate( modvec = map( model, mod2coef)) %>% # extract the coefficients.
+   select( week, age_group, modvec) %>% # extract the coefficients.
+   unnest( cols=modvec) 
+```
+
+That did the first part; `fitlist` now has the items with a vector of the predictions in in each row.  We can now plot some of these quantities.
+
+```{r}
+ggplot( fitlistw, aes( x=week, y=R2, color=age_group)) + geom_line() +
+   labs( title='Correlation Coefficient by age group', y=quote(r^2))
+```
+
+That looks pretty messy, although careful inspection shows that the older folks have a decent correlation.  Remember that if the slope is truly zero, so will the correlation coefficient.
+
+```{r}
+ggplot( fitlistw, aes( x=week, y=Slope, color=age_group)) + geom_line() +
+   labs( title='Slope by age group')
+```
+
+We can learn a lot from from this graph, but for our purposes it indicates that the death trends are pretty strongly influenced for the older population, but only slightly for the younger.  Note that the H1N1 affect in 2018 on 85 and older caused the slope to be negative.
+
+```{r}
+ggplot( fitlistw, aes( x=week, y=Pred20, color=age_group)) + geom_line() +
+   labs( title='Predicted 2020 Deaths by age group', y='Predicted Deaths')
+```
+

@@ -1,0 +1,131 @@
+---
+title: "The Pandemic is Over"
+author: "Phil Shea"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require( readr)
+require( RSocrata)
+require( tidyverse)
+require( scales)
+```
+
+# Total Deaths
+
+Total weekly death has reached back to 2019 levels, and therefore the pandemic is over.  The evidence and all the calculations are below.  Total death data downloaded from CDC website:  https://data.cdc.gov/NCHS/Weekly-counts-of-deaths-by-jurisdiction-and-age-gr/y5bj-9g5w.  
+
+The code below downloads the latest data, and displays the structure of the data.
+
+```{r Death}
+Death <- read.socrata('https://data.cdc.gov/NCHS/Weekly-counts-of-deaths-by-jurisdiction-and-age-gr/y5bj-9g5w', stringsAsFactors = TRUE)
+
+str( Death)
+```
+
+The data contains deaths by age group, by jurisdiction (including each state, the entire US, and New York city), and also has observations "Predicted (weighted)" (whatever that is) and "Unweighted," (tagged in the `type` column) so many deaths are double counted.  The code below will filter out just the "US," "Unweighted" data, and sum the age groups to get total deaths for each week.  Note also that 2020 has 53 weeks.  Week 1 of 2020 started on 30 December *2019*, and week 53 covers 28 December 2020 through 3 January *2021* (this follows the rule that weeks are 7 days, and get assigned to the year with four of the seven days).
+
+```{r DS, message=FALSE, warning=FALSE}
+DS <- Death |> filter( state_abbreviation == 'US', type == 'Unweighted') |>
+   group_by( week,  Year=year, date=week_ending_date) |> 
+   summarise( Total=sum( number_of_deaths), n=n()) # DS has weekly deaths
+```
+
+Here is the standard plot that many media outlets have been showing.  It does appear that there are a remarkable number of excess deaths.  The last five weeks or so typically do not have complete data yet (according to the CDC); they should be discounted.
+
+```{r dp, warning=FALSE}
+(dp <- ggplot( DS, mapping=aes( x=week, y=Total, color=as.factor(Year))) +
+   scale_y_continuous( labels=comma) + geom_point()  + labs( color='Year'))
+```
+
+## Average Deaths by Week
+
+It is useful to see averages for non-COVID years.  The code below will perform the  filtering and grouping as we did earlier, but will exclude years after 2020 from the data.  Now we have to deal with 2020's week 53 (it had an extra week).  For simplicity's sake, we will simply make the week 53 average the mean of week 1 and week 52 average deaths.
+
+```{r DA, message=FALSE, warning=FALSE}
+DA <- Death |> # DA is average deaths by week estimate by years before 2020
+   filter( state_abbreviation == 'US', type == 'Unweighted', year < 2020) |> 
+   group_by( week, year) |> 
+   summarise( Total=sum( number_of_deaths)) |>
+   summarise( Mean=mean( Total), n=n())
+DA <- rbind( DA, c( 53, mean( DA$Mean[ c( 1,51)]), 0)) # Deal with week 53
+wmin <- DA$week[ which.min( DA$Mean)] # find minimum week in the average.
+dp + geom_point() + geom_point( data=DA, aes( x=week, y=Mean), color='black') +
+   scale_y_continuous( label=comma, limits=c( 40000, 90000)) + 
+   labs( color='Year', title = "Weekly Deaths", 
+         caption = "Black dots are the avereage for years 2015-2019.")
+wmin <- DA$week[ which.min( DA$Mean)]
+```
+
+We cut the lower part as any sample below 40,000 is incomplete.  So, the simple question is about how much higher each post 2019 week is from the average. 
+
+### Shape of Weekly Deaths
+
+In order to make reliable estimates of weekly excess deaths, we need a reliable estimate of the weekly death rate, which obviously varies by week and by year.  We'll look at a polynomial approximation using an equations such as 
+
+$$
+D_e(w, y) = \sum_{n=0}^4 a_n(w - w_{min})^n + b y + D_{ave}
+$$
+
+where $D_e$ are the expected weekly deaths in week $w$ and year $y$, $w_{min}$ is the week number of the minimum deaths (and is `r wmin` in this data), $b$ is the yearly increase in deaths, and $D_{ave}$ is the average deaths over the modeled period^[This could be absorbed into $a_0$, but we would like the polynomial coefficients to only reflect the weekly curve].  2017 will be taken as year zero.  A 4^th^ degree polynomial is used due to some prior work which indicates it is statistically "best."
+
+Now we need to apply this method over the whole data set.  The code below creates new `aYear` and `aw` columns, performs the linear model, and displays a summary of the fit.  This is a lot of technical details, but there is some interesting details there.
+
+```{r fit2}
+DS$aYear <- DS$Year - 2017 # Create an adjusted year so 2017 is zero.
+mtw <- mean( DS$Total[ DS$Year < 2020])
+DS$aTotal <- DS$Total - mtw # The deviation from the 5 year average.
+DS$aw <- DS$week - wmin # adjusted week
+
+fit2 <- lm( aTotal ~ poly( aw, degree = 4) + aYear - 1, 
+            data = DS[ DS$Year < 2020,])
+
+summary( fit2)
+```
+
+Briefly, this tells us that the coefficients are all highly significant, with the 4^th^ degree polynomial being just above 11% significance^[What this means is that there is only about an 11.2% chance that that 4^th^ degree coefficient would have happened randomly due to the data.  The lower the significance the better.].  The polynomial coefficients are uninteresting^[Principally due to the way `R` uses something called *orthogonal polynomials*], but the `aYear` value of `761` indicates that each year the weekly death increases by that amount (yearly: 52 * 760 or about 40,000).  The R-squared values tell us that the model explains about 89% of the variation, which is pretty good.
+
+The following will extend the prediction through 2022. 
+
+```{r dpsw2}
+# below will extend the prediction over the entire data frame
+DS$Pred2 <- predict( fit2, newdata = DS) + mtw # must add the mean back in.
+dpsw2 <- ggplot( DS, mapping = aes( x = date, y = Total)) +
+   scale_y_continuous( labels = scales::comma) + 
+   geom_point( aes( color = factor( Year))) + labs( color = 'Year')
+(dpsw3 <- dpsw2 + geom_line( data=DS, 
+                   mapping=aes( x  = date, y = Pred2)) +
+   labs( title = "Weekly Deaths", 
+         subtitle = "Prediction ~ Poly( week, 4) + Year",
+   caption = "Weekly deaths from CDC database.  Prediction (black line) estimated over 2015 - 2019.") +  
+   annotate( "rect", xmin = as.POSIXct( "03/23/22", format = "%m/%d/%y"),
+             xmax = as.POSIXct("05/17/22", format = "%m/%d/%y"), ymin = 52500,
+             ymax = 57500, alpha = 0.2) + theme( legend.position = "none"))
+```
+
+H1N1 is evident in the beginning of 2018, and drove a January peak of expected deaths.  Nevertheless, the curve matches the modeled years pretty well.  Note the small highlighted section in March and April of 2022.
+
+## End of the COVID 19 Pandemic
+
+When the death curve starts to match the prediction again, the pandemic is truly over. Simply eyeballing the previous graphs, it looks like the death rate has settled back to the 2019 level.  The post-pandemic expected death rate for 2022 should be lower than that predicted by the model, as many people who would have died in 2022 (had there been no pandemic) had already died.  The following will demonstrate this.
+
+```{r DS2, warning=FALSE}
+DS2 <- DS
+DS2$aYear  <- DS2$aYear - 3
+DS2$Pred2 <-  predict( fit2, newdata = DS2) + mtw # must add the mean back in.
+dpsw3 +  geom_line( data = DS2, mapping = aes( x = date, y = DS2$Pred2),
+                    linetype=2, colour='red') +
+   scale_x_datetime( limits = as.POSIXct( c("01/02/22", "07/11/22"), 
+                                          format = "%m/%d/%y")) +
+   labs( title = "Weekly Deaths in 2022", 
+         subtitle = "2022 & 2019 predictions", x="2022",
+ caption = "Solid black line is 2022 prediction, dotted red line is 2019 prediction.") +
+   annotate( "rect", xmin = as.POSIXct( "03/23/22", format = "%m/%d/%y"),
+             xmax = as.POSIXct("05/17/22", format = "%m/%d/%y"), ymin = 52500,
+             ymax = 57500, alpha = 0.2) + theme( legend.position = "none")
+
+```
+
+This does not mean that people are no longer dying from COVID-19.  They are.  Just like they have always died from the flu, from colds, and other infirmities.  The point is that they are dying **just like they always have**.  Like all biological systems, this may change, and there is, perhaps, evidence of a slightly increasing death rate in weeks 18 and 19 (the last two highlighted weeks).  (Before you panic, look at the increase from H1N1 in 2018.)  While the CDC claims that after five weeks the statistics should be reliable, experience has shown that seven weeks should be discounted, so the seventh latest point being on or below the 2019 prediction should be ignored.
