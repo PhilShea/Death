@@ -1,2 +1,2 @@
 # Death
-Examination o COVID-19 Death Statistics
+Examination of COVID-19 Death Statistics
