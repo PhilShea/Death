@@ -112,16 +112,13 @@ CDC$year <- as.numeric( as.character( CDC$year)) # Convert to number
 ```{r CDC}
 CDCyr<- CDC %>% filter( state == 'United States', group=="By Year", year < 2022) 
 # data already contains summaries.
-
-#CDC <- data.frame( Year = c( 2020, 2021), COVID=c( 385668, 462556), 
-#                   TD=c( 3390079, 3469560))
 cat( "Difference in Total Deaths\n")
 prettyNum( CDCyr$total_deaths - yt$TD[6:7], big.mark=",", trim=TRUE)
 cat( "\nDifference between COVID deaths and excess deaths:\n")
 prettyNum(CDCdelta <- CDCyr$covid_19_deaths - ed[6:7], big.mark=",", trim=TRUE)
 cat( "\nTotal Disrepancy")
-TD <- sum( CDCdelta)
-prettyNum( -TD, big.mark=",", trim=TRUE)
+TDcdc <- sum( CDCdelta)
+prettyNum( -TDcdc, big.mark=",", trim=TRUE)
 ```
 That is almost 200,000 excess deaths not attributed to COVID.  This is why the news media had not been reporting that "million deaths due to COVID" until April, although frankly today (5/19) the CDC is only showing 997,887 through last week. [https://covid.cdc.gov/covid-data-tracker/#trends_totaldeaths](https://covid.cdc.gov/covid-data-tracker/#trends_totaldeaths)
 
@@ -147,7 +144,8 @@ DA <- Death |> # DA is average deaths by week estimate by years before 2020
 DA <- rbind( DA, c( 53, mean( DA$Mean[ c( 1,51)]), 0)) # Deal with week 53
 dp + geom_point() + geom_point( data=DA, aes( x=week, y=Mean), color='black') +
    scale_y_continuous( label=comma, limits=c( 40000, 90000)) + 
-   labs( color='Year')
+   labs( color='Year', title = "Weekly Deaths", 
+         caption = "Black dots are the avereage for years 2015-2019.")
 ```
 
 We cut the lower part as any sample below 40,000 is incomplete.  So, the simple question is about how much higher each post 2019 week is from the average. 
@@ -167,51 +165,62 @@ The effect of H1N1 in 2017 is evident in the first few weeks.  One other thing t
 In order to make reliable estimates of weekly excess deaths, we need a reliable estimate of the weekly death rate, which obviously varies by week.  We'll look at a second order approximation using an equations such as 
 
 $$
-D_a(w) = a(w - w_{min})^2 + D_{min}
+D_e(w, y) = \sum_{i=0}^n a_i(w - w_{min})^i + by
 $$
 
-where $D_a$ are the average deaths in week $w$, $w_{min}$ is the week number of the minimum deaths, and $D_{min}$ is the average deaths in week $w_{min}$.
+where $D_e$ is the expected number of deaths in week $w$ and adjusted year $y$, $w_{min}$ is the week number of the minimum deaths, and $b$ is the average deaths in week $w_{min}$.
 
 ```{r DmDA}
 Dm <- mean( DA$Mean)
-wmin <- DA$week[which(DA$Mean == min( DA$Mean))]
+wmin <- 26 #DA$week[which(DA$Mean == min( DA$Mean))]
 DA <- DA %>% mutate( wa = week - wmin, AM = Mean - Dm)
 (avgpnts <- ggplot( data=DA) + aes( x = wa, y = AM) + geom_point() +
       xlab( "Adjusted Week") + ylab( "Adjusted Mean"))
 ```
 
-Week `r wmin` is hte minimum week.  There is a cyclical nature here.  It looks like it might be sharply peaked, but let us construct a data item that will allow us to see the means back-to-back.
+Week `r wmin` is the minimum week.  There is a cyclical nature here.  It looks like it might be sharply peaked; the peakedness is evident before 2020.
 
-```{r DA3}
-DA3 <- rbind(DA, DA, DA) # replicate DA 3 times
-DA3$nw <- seq_along(DA3$week)
-ggplot( data=DA3) + aes( x=nw, y = AM) + geom_point() +
-      xlab( "New Week") + ylab( "Adjusted Mean")
+```{r dpsw}
+yw <- c( 0, cumsum( aggregate( week ~ Year, data=DS, FUN=max)$week))
+# yw is a look up for how many weeks to add to each year's week number.
+DS$sw <- DS$week + yw[ DS$Year - 2014] # add serial weeks
+DS <- DS[ order( DS$sw),]
+dpsw <- ggplot( DS, mapping = aes( x = date, y = Total)) +
+   scale_y_continuous( labels = scales::comma) + 
+   geom_point( aes( color = factor( Year))) + labs( color = 'Year')
+dpsw
 ```
 
-So a highly peaked approximation is called for, and using a polynomial over a year is well suited to this form.  The folowing will develop a range of polynomials.
+So a highly peaked approximation is called for, and using a polynomial over a year is well suited to this form.  The following will develop a range of polynomials.
 
 ```{r avgfit}
+DS$aYear <- DS$Year - 2017 # Create an adjusted year so 2017 is zero.
+DS$aw <- DS$week - wmin # adjust week.
+DS2000 <- DS[ DS$Year < 2020,]
+mtw <- mean( DS2000$Total)
+DS2000$aTotal <- DS2000$Total - mtw # The deviation from the 5 year average.
 dlim <- 9
 varlst <- ""
-avgpnts2 <- avgpnts
 avgfit <- data.frame() # DF with fit for each degree.
 for (degree in 2:dlim) {
-   expr <- as.formula( paste("AM ~ poly( wa, degree = ", degree, ")"))
-   fm <- lm( expr, data = DA ) # this ensures the degree shows up in the model
-   #fm <- lm( AM ~ poly( wa, degree = degree), data = DA )
+   expr <- as.formula( paste("aTotal ~ poly( aw, degree = ", degree, 
+                             ") + aYear - 1"))
+   fm <- lm( expr, data = DS2000) # this ensures the degree shows up in the model
    var <- paste( "avgfit", degree, sep =  ".") # creates a variable "avgfit.n"
    assign( var, fm) # essentially avgfit.n <- fm
    varlst <- paste( varlst, ", ", var)
    avgfit <- rbind( avgfit, 
-                    data.frame( wa = DA$wa, week = DA$week,
-                                degree = rep_along( DA$wa, paste(degree)),
-                                deg = rep_along( DA$wa, degree),
-                                Pred=as.vector( fitted( get( var))))) 
-                                 #as.vector strips names
+                    data.frame( date = DS2000$date, week = DS2000$week,
+                                aw = DS2000$aw,
+                                degree = rep_along( DS2000$aw, paste(degree)),
+                                deg = rep_along( DS2000$aw, degree),
+                                Pred = as.vector( fitted( get( var))) + mtw
+                              ) #as.vector strips names
+                  ) 
 }
-avgpnts2 + geom_line( data = avgfit, 
-                      aes( x = wa, y = Pred, group = degree, color = degree))
+
+dpsw + geom_line( data = avgfit, 
+                      aes( x = date, y = Pred, group = degree, color = degree))
 
 ```
 
@@ -220,123 +229,125 @@ They *all* fit pretty well. The expression below will show an analysis if varian
 ```{r}
 eval( str2lang( paste( "anova(", substring( varlst, first=4), ")")))
 # drops first 3 characters of varlist, creates an anova call.
+eval( str2lang( paste( "AIC(", substring( varlst, first=4), ")")))
 ```
 
-So model three (4th degree) looks like the most significant.  The way to interpret this is that model 3's RSS would only have a 0.04% chance of randomly being that much less than model 2's RSS, whereas model 4's RSS has a 12% chance of randomly being that much less than model 3's. Studyng the graph below reveals the wisdom in the statistics.
+So model three (`avgfit.4` 4^th^ degree) looks like the most significant.  The way to interpret this is that model 3's RSS would only have a 1.1% chance of randomly being that much less than model 2's RSS, whereas model 4's RSS has a 67% chance of randomly being that much less than model 3's (that is, the reduction is likely due to random chance). The AIC call confirms that the 4^th^ degree is the best fit (it has the minimum AIC).
 
+Now we need to apply this model over the whole data set.  
 
-```{r}
-avgpnts2 +  geom_line( data=avgfit[avgfit$deg %in% c(3,4,5),], 
-                       aes(x=wa, y=Pred, group = degree, color=degree))
-
-```
-
-Now we need to apply this over the whole data set.  
-
-```{r dpsw}
-yw <- c( 0, cumsum( aggregate( week ~ Year, data=DS, FUN=max)$week))
-# yw is a look up for how many weeks to add to each year's week number.
-DS$sw <- DS$week + yw[ DS$Year - 2014] # add serial weeks
-dpsw <- ggplot( DS, mapping = aes( x = date, y = Total)) +
-   scale_y_continuous( labels = scales::comma) + 
-   geom_point( aes( color = factor( Year))) + labs( color = 'Year')
-DS$Pred <- avgfit$Pred[ avgfit$degree == 4][ DS$week] + 
-   yt$Pred[ DS$Year - 2014] / 52 # Adds one week's worth of death for that year.
-ltyp <- rep( "blank", 8)
-(dpswl1 <- dpsw + 
-      geom_line( data = DS, inherit.aes = FALSE, 
-                 mapping = aes( x  = date, y = Pred)) +
-      labs( title = "Weekly Deaths", subtitle = "Prediction ~ Poly(5) + Year",
-            caption = "Weekly deaths from CDC database.  Prediction line estimated over 2015 - 2019."))
-```
-
-As might be expected, the technique highlights the H1N1 surge in early 2018.  The flattening at the start of 2016, 2019, and 2020 is also made more obvious, and makes one question the peakedness of the model. Zooming in on the end of 2019 and the beginning of 2020 show how crude this estimate is (the discontinuity between years), but also shows that this is a small deviation compared to the large number of excess deaths.
-
-```{r}
-dpsw + scale_x_datetime( 
-   limits = as.POSIXct( c("12/01/21", "07/11/22"),
-                                  format="%m/%d/%y")) 
-```
-
-Note that week nine of 2022 is below expectation.  One might think that the pandemic was over in week nine, but this would be mistaken.  The large number of preceding deaths means that once the pandemic is over, the death curve will match an earlier year (although, there are no longer *excess* deaths that can be attributed to COVID).  This looks like if happens on week 12 (the last week of March).
-
-```{r totaldeath}
-ggplot( data=DS[ DS$Year==2022,]) + 
-   geom_point( aes(x=date, y=Total - Pred))
-t <- DS[ DS$Year==2022,]
-t2 <- t$Total - t$Pred
-t2[ t2 >0]
-td.2022 <- sum( t2[ t2 >0])
-paste( "Total Deaths in 2022: ", td.2022, "\n")
-paste( "Total COVID Death through week 11: ", ed[ "2020"]+ed["2021"] + td.2022)
-```
-
-## Alternate Method of Deaths by Week
-
-That was a complicated process that can all be automated within `lm`.  We need to make an "adjusted week" columm and an adjusted total column which will have the mean subtracted out.  A fourth degree polynomlial will still be used.
-
-```{r}
-DS$aYear <- DS$Year - 2017 # Create an adjusted year so 2017 is zero.
-mtw <- mean( DS$Total[ DS$Year < 2020])
-DS$aTotal <- DS$Total - mtw # The deviation from the 5 year average.
-DS$aw <- DS$week - wmin
-fit2 <- lm( aTotal ~ poly( aw, degree = 4) + aYear, data = DS[ DS$Year < 2020,])
-summary( fit2)
-DS$Pred2 <- predict( fit2, newdata = DS) + mtw # must add the mean back in.
+```{r dpsw3}
+DS$Pred <- predict( avgfit.4, newdata = DS) + mtw # must add the mean back in.
 dpsw2 <- ggplot( DS, mapping = aes( x = date, y = Total)) +
    scale_y_continuous( labels = scales::comma) + 
    geom_point( aes( color = factor( Year))) + labs( color = 'Year')
 (dpsw3 <- dpsw2 + geom_line( data=DS, 
-                   mapping=aes( x  = date, y = Pred2)) +
-   labs( title = "Weekly Deaths", subtitle = "Prediction ~ Poly( week, 4) + Year",
-            caption = "Weekly deaths from CDC database.  Prediction (black line) estimated over 2015 - 2019.") +  annotate( "rect", xmin = as.POSIXct( "03/23/22", format = "%m/%d/%y"),
-             xmax = as.POSIXct("05/17/22", format = "%m/%d/%y"), ymin = 52500,
+                   mapping=aes( x  = date, y = Pred)) +
+   labs( title = "Weekly Deaths", 
+         subtitle = "Prediction ~ Poly( week, 4) + Year",
+   caption = "Weekly deaths from CDC database.  Prediction (black line) estimated over 2015 - 2019.") +  
+   annotate( "rect", xmin = as.POSIXct( "03/23/22", format = "%m/%d/%y"),
+             xmax = as.POSIXct("05/24/22", format = "%m/%d/%y"), ymin = 52500,
              ymax = 57500, alpha = 0.2) + theme( legend.position = "none"))
 ```
 
-The coefficients are somewhat difficult to interpret, but note the `aYear` coefficient is `r coef(fit2)["aYear"]`, which is comparable to the previous value (~40,000) divided by 52 (`r m`).  Below is the difference between the methods.
+As might be expected, the technique highlights the H1N1 surge in early 2018.  The flattening at the start of 2016, 2019, and 2020 is also made more obvious, and makes one question the "peakedness" of the model. Zooming in on the end of 2019 and the beginning of 2020 show how crude this estimate is (the discontinuity between years), but also shows that this is a small deviation compared to the large number of excess deaths.
 
 ```{r}
-ggplot( data=DS, mapping=aes( x = date, y = (Pred - Pred2))) + geom_point()
+dpsw3 + scale_x_datetime( 
+   limits = as.POSIXct( c("12/01/21", "07/11/22"),
+                                  format="%m/%d/%y")) 
 ```
+
+Note that week ten of 2022 is below expectation.  One might think that the pandemic was over in week ten, but this would be mistaken.  The large number of preceding deaths means that once the pandemic is over, the death curve will match an earlier year (although, there are no longer *excess* deaths that can be attributed to COVID).  This looks like if happens on week 12 (the last week of March).
+
+```{r}
+summary( avgfit.4)
+```
+
+The polynomial coefficients are  difficult to interpret, but note the `aYear` coefficient is `r coef( avgfit.4)["aYear"]`, which is comparable to the previous value (~40,000) divided by 52 (`r m`). 
 
 ## End of the COVID 19 Pandemic
 
-When the deth curve starts to match the 4^th degree polynomial, the pandemic is truly over. Simply eyeballing the previous graphs, it looks like the death rate has settled back to the 2019 level.  The following will demonstrate this.
+When the death curve starts to match the 4^th degree polynomial, the pandemic is truly over. Simply eyeballing the previous graphs, it looks like the death rate has settled back to the 2019 level.  The following will demonstrate this.
 
-```{r}
-DS2 <- DS
-DS2$aYear  <- DS2$aYear - 3
-DS2$Pred2 <-  predict( fit2, newdata = DS2) + mtw # must add the mean back in.
-dpsw3 +  geom_line( data = DS2, mapping = aes( x = date, y = DS2$Pred2),
+```{r Pred2}
+DS$Pred2 <-  predict( avgfit.4, # Pred2 will have 3-year shifted values.
+                       newdata = data.frame( aw=DS$aw, aYear=DS$aYear - 3)) + 
+   mtw # must add the mean back in.
+(dpsw4 <- dpsw3 +  geom_line( data = DS, mapping = aes( x = date, y = DS$Pred2),
                     linetype=2, colour='red') +
    scale_x_datetime( limits = as.POSIXct( c("01/02/22", "07/11/22"), 
                                           format = "%m/%d/%y")) +
    labs( title = "Weekly Deaths in 2022", 
          subtitle = "2022 & 2017 predictions", x="2022",
- caption = "Solid black line is 2022 prediction, dotted red line is 2017 prediction.") +
-   annotate( "rect", xmin = as.POSIXct( "03/23/22", format = "%m/%d/%y"),
-             xmax = as.POSIXct("05/17/22", format = "%m/%d/%y"), ymin = 52500,
-             ymax = 57500, alpha = 0.2) + theme( legend.position = "none")
+ caption = "Solid black line is 2022 prediction, dotted red line is 2017 prediction.") + theme( legend.position = "none"))
 
 ```
+
+### Varience of the extended estimate
+
+Since we are extending the estimate, we should look at the variance of the estimates.
+
+```{r fit4}
+fit4 <- lm( Total ~ poly( aw, degree = 4) + aYear, data = DS[ DS$Year < 2020,])
+summary(fit4)
+
+DS  <- cbind( DS, as.data.frame( predict( fit4, newdata=DS,
+                                          interval="prediction", level = 0.95)))
+```
+
+```{r}
+dpsw4 + geom_ribbon( data =DS,
+                     mapping = aes( x = date, ymin = lwr, ymax = upr),
+                     fill="blue", alpha = 0.2) +
+   scale_x_datetime( limits = as.POSIXct( c("01/02/22", "07/11/22"), 
+                                          format = "%m/%d/%y")) +
+   scale_y_continuous( limits = c(50000, 70000)) +
+   labs( title = "Weekly Deaths in 2022", 
+         subtitle = "2022 & 2017 predictions", x="2022",
+ caption = "Solid black line is 2022 prediction, dotted red line is 2017 prediction.") + theme( legend.position = "none")   
+```
+
+This is a very tight range for the prediction.
+
+```{r}
+x <- residuals(fit4)
+plot( x, panel.first=grid())
+(ss <- sd( x))
+```
+
+
+The residuals are surprisingly uniform, and the H1N1 deviation (around 150) is clear.  The standard deviation (`r ss`) is driven by these deviations, but they are real. While the variance of the model estimates is quite small.
 
 ## Total Deaths Due to COVID-19
 
-We can probably get a better estimate of excess deaths by looking at the weekly data.  The start will be the first week in 2020 in which the weekly deaths exceeded the prediction.
+We can probably get a better estimate of excess deaths by looking at the weekly data.  The start will be the first week in 2020 in which the weekly deaths exceeded the prediction (we know that once this happened, it did not return until 2022).
 
 ```{r}
-DS <- DS[ order( DS$sw), ]
-DS$cTotal <- cumsum( DS$Total - DS$Pred2)
+DS <- DS[ order( DS$sw), ] # ensure the data is sorted in serial week order.
+DS$cTotal <- cumsum( DS$Total - DS$Pred)
 plot( DS$sw, DS$cTotal, panel.first = grid())
-fst <- which( (DS$Total > DS$Pred2) & DS$Year == 2020)[ 1]
+fst <- which( (DS$Total > DS$Pred) & DS$Year == 2020)[ 1] 
+#find first time in 2020 that prediction was exceeded. 
 (md <- max( DS$cTotal)) # Once it starts to decrease, we are past excess deaths,
 # although the pandemic may still be going on.
 imax <- which( DS$cTotal == md)
-DS$cTotal[ imax] - DS$cTotal[fst - 1] 
+CVDeath <- md - DS$cTotal[fst - 1] 
 # cTotal[ fst] reflects the increase, so use the one before it.
+format( CVDeath, big.mark=",", trim=TRUE)
 ```
 
+```{r}
+ed[6:7]
+cTotal <- c( 0, as.vector( DS$cTotal))
+yi <- c( sapply( 2015:2022, function(x) which( DS$week==1 & DS$Year == x)), 
+         length( cTotal))  # year index
+ed2 <- cTotal[ yi[ 2:9]] - cTotal[ yi[ 1:8]]
+names(ed2) <- 2015:2022
+ed
+ed2
+```
 
 # Death by Age
 
